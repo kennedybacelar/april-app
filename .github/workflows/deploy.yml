@@ -33,6 +33,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build, tag, and push image to Amazon ECR
+        working-directory: ./app
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA .
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA $ECR_REGISTRY/$ECR_REPOSITORY:latest
@@ -48,6 +49,24 @@ jobs:
             --query 'Reservations[0].Instances[0].InstanceId' \
             --output text)
           echo "instance_id=$INSTANCE_ID" >> $GITHUB_OUTPUT
+
+      - name: Wait for SSM connectivity
+        run: |
+          echo "Waiting for instance ${{ steps.get-instance.outputs.instance_id }} to register with SSM..."
+          for i in {1..30}; do
+            STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${{ steps.get-instance.outputs.instance_id }}" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text 2>/dev/null || echo "NotFound")
+            if [ "$STATUS" = "Online" ]; then
+              echo "Instance is SSM-ready"
+              exit 0
+            fi
+            echo "Attempt $i/30: SSM status=$STATUS, waiting 10s..."
+            sleep 10
+          done
+          echo "ERROR: Instance failed to register with SSM after 5 minutes"
+          exit 1
 
       - name: Deploy to EC2 via SSM
         run: |
